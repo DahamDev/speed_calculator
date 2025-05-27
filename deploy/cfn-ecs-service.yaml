@@ -1,0 +1,207 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for Speed Calculator ECS Fargate deployment'
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    Description: Environment name
+  
+  VpcId:
+    Type: String
+    Description: VPC ID where resources will be deployed
+  
+  PublicSubnets:
+    Type: CommaDelimitedList
+    Description: List of public subnet IDs for the ALB
+  
+  PrivateSubnets:
+    Type: CommaDelimitedList
+    Description: List of private subnet IDs for ECS tasks
+  
+  ContainerImage:
+    Type: String
+    Description: ECR image URI for the container
+  
+  ContainerPort:
+    Type: Number
+    Description: Port exposed by the container
+  
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Application log level
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${EnvironmentName}-speed-calculator-cluster
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${EnvironmentName}-speed-calculator
+      RetentionInDays: 30
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-speed-calculator-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${EnvironmentName}-speed-calculator-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SpeedCalculatorTaskPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt LogGroup.Arn
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${EnvironmentName}-speed-calculator
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: speed-calculator
+          Image: !Ref ContainerImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              HostPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: API_PORT
+              Value: !Ref ContainerPort
+            - Name: LOG_LEVEL
+              Value: !Ref LogLevel
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${EnvironmentName}-speed-calculator-alb
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      Subnets: !Ref PublicSubnets
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvironmentName}-speed-calculator-tg
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      ServiceName: !Sub ${EnvironmentName}-speed-calculator
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 2
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref PrivateSubnets
+      LoadBalancers:
+        - ContainerName: speed-calculator
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+
+  ServiceName:
+    Description: ECS Service Name
+    Value: !Ref ECSService
+
+  LoadBalancerDNS:
+    Description: DNS of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  ServiceURL:
+    Description: URL of the service
+    Value: !Sub http://${ApplicationLoadBalancer.DNSName}

@@ -1,0 +1,20 @@
+aws:
+  accountId: "123456789"  
+  region: "us-east-1"
+  vpc:
+    id: "vpc-0ed7419a484c71bf0"
+    public_subnets:
+      - id: "subnet-042624b1683145840"
+      - id: "subnet-01e5a2c504271c633"
+    private_subnets:
+      - id: "subnet-0c30960e3ca8f8149"
+      - id: "subnet-0f64bd6889995cf24"
+  ecr:
+    repository:
+      name: "speedcalculator"
+      tag: "1.0.0"
+app:
+  version: "1.0.0"
+  environment:
+    API_PORT: 8000
+    LOG_LEVEL: INFO
