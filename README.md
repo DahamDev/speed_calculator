@@ -1,4 +1,4 @@
-peed Calculator API
+### Speed Calculator API
 A FastAPI-based microservice for performing speed calculations, demonstrating cloud deployment patterns.
 
 Overview
